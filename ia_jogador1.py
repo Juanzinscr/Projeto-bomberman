@@ -218,11 +218,18 @@ def decidir_acao(
         bombas_ativas = self_state["bombas_ativas"]
         max_bombas = self_state["max_bombas"]
 
+        print(
+                    f"[ATAQUE] Posição: ({x}, {y}) | "
+                    f"Bombas ativas: {self_state['bombas_ativas']} | "
+                    f"Posições de ataque: {len(posicoes_para_atacar)}"
+                    )
+        
         bomba_no_local = any(
             (b.x, b.y) == (x, y) and not b.explodida
             for b in bombas
-        )
 
+        )
+        
         if bombas_ativas < max_bombas and not bomba_no_local:
             explosao_nova = calcular_explosao(
                 x, y, self_state["bomba_nivel"]
@@ -243,7 +250,6 @@ def decidir_acao(
             rota_de_fuga = encontrar_caminho(
                 casas_de_fuga,
                 perigo_total,
-                permitir_perigo=True
             )
 
             if rota_de_fuga is not None:
