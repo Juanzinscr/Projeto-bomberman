@@ -11,12 +11,15 @@ ACOES_MOVIMENTO = {
 
 direcao_atual = "baixo"
 
+estado_bomba = "livre"
+destino_fuga = None
+alvo_atual = None
 
 def decidir_acao(
     player, mapa, jogadores, bombas,
     tempo_restante, pontos, hud_info, self_state
 ):
-    global direcao_atual
+    global direcao_atual, estado_bomba, destino_fuga, alvo_atual
 
     x = self_state["grid_x"]
     y = self_state["grid_y"]
@@ -125,27 +128,121 @@ def decidir_acao(
 
         return None
 
-    # 1. Se estiver em uma área ameaçada, tentar escapar
-    if (x, y) in casas_perigosas:
-        casas_seguras = [
-            (cx, cy)
-            for cy in range(linhas)
-            for cx in range(colunas)
-            if mapa[cy][cx] in [0, 3, 4]
-            and (cx, cy) not in casas_perigosas
-            and (cx, cy) not in posicoes_bombas
-            and (cx, cy) not in posicoes_jogadores
-        ]
+        # Verifica se existe uma rota até um abrigo,
+    # permitindo atravessar casas que serão atingidas
+    def existe_rota_de_fuga(inicio_x, inicio_y, perigos):
+        fila = deque([(inicio_x, inicio_y)])
+        visitadas = {(inicio_x, inicio_y)}
 
-        fuga = encontrar_caminho(
-            casas_seguras, casas_perigosas, permitir_perigo=True
+        while fila:
+            atual_x, atual_y = fila.popleft()
+
+            # Encontrou uma casa segura diferente da posição da bomba
+            if (
+                (atual_x, atual_y) != (inicio_x, inicio_y)
+                and (atual_x, atual_y) not in perigos
+            ):
+                return True
+
+            for dx, dy in ACOES_MOVIMENTO.values():
+                nx = atual_x + dx
+                ny = atual_y + dy
+
+                if (nx, ny) in visitadas:
+                    continue
+
+                if not pode_andar(nx, ny):
+                    continue
+
+                visitadas.add((nx, ny))
+                fila.append((nx, ny))
+
+        return False
+   
+    # PRIORIDADE 1: fugir e esperar a explosão
+    if player.bombas:
+
+        # Verifica se ainda existe alguma bomba que não explodiu
+        bomba_pendente = any(
+            not b.explodida for b in player.bombas
         )
 
-        if fuga is not None:
-            direcao_atual = fuga
-            return fuga
+        # Se ainda estamos em uma área perigosa, precisamos fugir
+        if (x, y) in casas_perigosas:
 
-    # 2. Procurar power-ups: 3 = bomba, 4 = alcance
+            estado_bomba = "fugindo"
+            destino_fuga = None
+
+            casas_seguras = [
+                (cx, cy)
+                for cy in range(linhas)
+                for cx in range(colunas)
+                if mapa[cy][cx] in [0, 3, 4]
+                and (cx, cy) not in casas_perigosas
+                and (cx, cy) not in posicoes_bombas
+                and (cx, cy) not in posicoes_jogadores
+            ]
+
+            fuga = encontrar_caminho(
+                casas_seguras,
+                casas_perigosas,
+                permitir_perigo=bomba_pendente
+            )
+
+            if fuga is not None:
+                print(
+                    f"[FUGINDO] Posição: ({x}, {y}) | "
+                    f"Próxima ação: {fuga}"
+                )
+                return fuga
+
+            print(f"[ERRO FUGA] Sem saída a partir de ({x}, {y})")
+            return "parado"
+
+        # Se chegou a uma posição segura, deve esperar
+        estado_bomba = "esperando"
+        destino_fuga = (x, y)
+
+        print(
+            f"[ESPERANDO] Abrigo: ({x}, {y}) | "
+            f"Bombas próprias: {len(player.bombas)}"
+        )
+
+        return "parado"
+
+    # 2. Identificar e selecionar um adversário como alvo
+    
+    adversarios = [
+        p for p in jogadores
+        if p is not player and p.ativo
+    ]
+    
+    # Verifica se precisamos escolher um novo alvo
+    if (
+            alvo_atual is None
+            or not alvo_atual.ativo
+            or alvo_atual not in adversarios
+        ):
+    
+            if adversarios:
+                # Escolhe o adversário mais próximo
+                alvo_atual = min(
+                    adversarios,
+                    key=lambda p:
+                        abs(p.grid_x - x) + abs(p.grid_y - y)
+                )
+    
+                print(
+                    f"[ALVO] Adversário selecionado: "
+                    f"({alvo_atual.grid_x}, {alvo_atual.grid_y})"
+                )
+    
+            else:
+                alvo_atual = None
+                print("[ALVO] Nenhum adversário disponível")
+                
+
+    # 3. Procurar power-ups: 3 = bomba, 4 = alcance
     powerups = [
         (cx, cy)
         for cy in range(linhas)
@@ -160,7 +257,8 @@ def decidir_acao(
         direcao_atual = caminho_powerup
         return caminho_powerup
 
-    # 3. Procurar posições ao lado de blocos destrutíveis (valor 1)
+        
+    # 4. Procurar posições ao lado de blocos destrutíveis (valor 1)
     posicoes_para_atacar = set()
 
     for by in range(linhas):
@@ -178,18 +276,40 @@ def decidir_acao(
                 if (nx, ny) in casas_perigosas:
                     continue
 
-                posicoes_para_atacar.add((nx, ny))
+                # Simula uma bomba nesta posição
+                explosao_teste = calcular_explosao(
+                    nx, ny, self_state["bomba_nivel"]
+                )
+
+                perigo_teste = casas_perigosas | explosao_teste
+
+                # Verifica se existe uma rota completa até um abrigo
+                tem_rota = existe_rota_de_fuga(
+                    nx,
+                    ny,
+                    perigo_teste
+                )
+
+                if tem_rota:
+                    posicoes_para_atacar.add((nx, ny))
 
     # Se já está ao lado de um bloco, avaliar colocar uma bomba
     if (x, y) in posicoes_para_atacar:
         bombas_ativas = self_state["bombas_ativas"]
         max_bombas = self_state["max_bombas"]
 
+        print(
+                    f"[ATAQUE] Posição: ({x}, {y}) | "
+                    f"Bombas ativas: {self_state['bombas_ativas']} | "
+                    f"Posições de ataque: {len(posicoes_para_atacar)}"
+                    )
+        
         bomba_no_local = any(
             (b.x, b.y) == (x, y) and not b.explodida
             for b in bombas
-        )
 
+        )
+        
         if bombas_ativas < max_bombas and not bomba_no_local:
             explosao_nova = calcular_explosao(
                 x, y, self_state["bomba_nivel"]
@@ -208,11 +328,18 @@ def decidir_acao(
             ]
 
             rota_de_fuga = encontrar_caminho(
-                casas_de_fuga, perigo_total, permitir_perigo=True
+                casas_de_fuga,
+                perigo_total,
+                permitir_perigo=True
             )
 
             if rota_de_fuga is not None:
                 return "bomba"
+            print(
+                f"[ATAQUE] Posição: ({x}, {y}) | "
+                f"Bombas ativas: {self_state['bombas_ativas']} | "
+                f"Posições de ataque: {len(posicoes_para_atacar)}"
+            )
 
     # Se não estiver ao lado de um bloco, caminhar até uma posição de ataque
     caminho_bloco = encontrar_caminho(
@@ -222,35 +349,5 @@ def decidir_acao(
     if caminho_bloco is not None:
         direcao_atual = caminho_bloco
         return caminho_bloco
-
-    # 4. Explorar: continuar na direção atual se for possível
-    dx, dy = ACOES_MOVIMENTO[direcao_atual]
-    proximo_x = x + dx
-    proximo_y = y + dy
-
-    if (
-        pode_andar(proximo_x, proximo_y)
-        and (proximo_x, proximo_y) not in casas_perigosas
-    ):
-        return direcao_atual
-
-    # Se a direção estiver bloqueada, escolher uma alternativa
-    movimentos_validos = [
-        acao
-        for acao, (dx, dy) in ACOES_MOVIMENTO.items()
-        if pode_andar(x + dx, y + dy)
-        and (x + dx, y + dy) not in casas_perigosas
-    ]
-
-    if not movimentos_validos:
-        movimentos_validos = [
-            acao
-            for acao, (dx, dy) in ACOES_MOVIMENTO.items()
-            if pode_andar(x + dx, y + dy)
-        ]
-
-    if movimentos_validos:
-        direcao_atual = random.choice(movimentos_validos)
-        return direcao_atual
 
     return "parado"
