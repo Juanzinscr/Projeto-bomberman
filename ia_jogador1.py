@@ -166,53 +166,38 @@ def decidir_acao(
 
         return False
    
-    # PRIORIDADE 1: fugir e esperar a explosão
-    if player.bombas:
+   
+    # PRIORIDADE 1: fugir de qualquer bomba, inclusive dos adversários
+    if (x, y) in casas_perigosas:
 
-        # Verifica se ainda existe alguma bomba que não explodiu
-        bomba_pendente = any(
-            not b.explodida for b in player.bombas
+        casas_seguras = [
+            (cx, cy)
+            for cy in range(linhas)
+            for cx in range(colunas)
+            if mapa[cy][cx] in [0, 3, 4]
+            and (cx, cy) not in casas_perigosas
+            and (cx, cy) not in posicoes_bombas
+            and (cx, cy) not in posicoes_jogadores
+        ]
+
+        rota_fuga = encontrar_caminho(
+            casas_seguras,
+            casas_perigosas,
+            permitir_perigo=True
         )
 
-        # Se ainda estamos em uma área perigosa, precisamos fugir
-        if (x, y) in casas_perigosas:
+        if rota_fuga is not None:
 
-            estado_bomba = "fugindo"
-            destino_fuga = None
-
-            casas_seguras = [
-                (cx, cy)
-                for cy in range(linhas)
-                for cx in range(colunas)
-                if mapa[cy][cx] in [0, 3, 4]
-                and (cx, cy) not in casas_perigosas
-                and (cx, cy) not in posicoes_bombas
-                and (cx, cy) not in posicoes_jogadores
-            ]
-
-            fuga = encontrar_caminho(
-                casas_seguras,
-                casas_perigosas,
-                permitir_perigo=bomba_pendente
+            print(
+                f"[FUGA PERIGO] Bomba detectada! "
+                f"Posição: ({x}, {y}) | "
+                f"Saindo por: {rota_fuga}"
             )
 
-            if fuga is not None:
-                print(
-                    f"[FUGINDO] Posição: ({x}, {y}) | "
-                    f"Próxima ação: {fuga}"
-                )
-                return fuga
-
-            print(f"[ERRO FUGA] Sem saída a partir de ({x}, {y})")
-            return "parado"
-
-        # Se chegou a uma posição segura, deve esperar
-        estado_bomba = "esperando"
-        destino_fuga = (x, y)
+            return rota_fuga
 
         print(
-            f"[ESPERANDO] Abrigo: ({x}, {y}) | "
-            f"Bombas próprias: {len(player.bombas)}"
+            f"[ERRO FUGA] Sem rota segura em ({x}, {y})"
         )
 
         return "parado"
@@ -271,6 +256,125 @@ def decidir_acao(
         direcao_atual = caminho_powerup
         return caminho_powerup
 
+    
+    # 4. Perseguir e atacar o adversário selecionado
+
+    if alvo_atual is not None and alvo_atual.ativo:
+
+        alvo_x = alvo_atual.grid_x
+        alvo_y = alvo_atual.grid_y
+
+        print(
+            f"[DEBUG PERSEGUIÇÃO] Minha posição: ({x}, {y}) | "
+            f"Posição do alvo: ({alvo_x}, {alvo_y})"
+        )
+        # Calcular a distância até o adversário
+        distancia_alvo = (
+            abs(alvo_x - x) + abs(alvo_y - y)
+        )
+
+        # Verificar se a explosão da nossa bomba atingiria o alvo
+        explosao_ataque = calcular_explosao(
+            x, y, self_state["bomba_nivel"]
+        )
+
+        alvo_na_explosao = (alvo_x, alvo_y) in explosao_ataque
+
+        bombas_ativas = self_state["bombas_ativas"]
+        max_bombas = self_state["max_bombas"]
+
+        bomba_no_local = any(
+            (b.x, b.y) == (x, y) and not b.explodida
+            for b in bombas
+        )
+
+        print(
+            f"[ANALISE ATAQUE] Distância: {distancia_alvo} | "
+            f"Alvo no alcance: {alvo_na_explosao} | "
+            f"Bombas: {bombas_ativas}/{max_bombas}"
+        )
+
+        # PRIORIDADE: atacar se o adversário estiver na explosão
+        if (
+            alvo_na_explosao
+            and bombas_ativas < max_bombas
+            and not bomba_no_local
+        ):
+
+            perigo_total = casas_perigosas | explosao_ataque
+
+            casas_de_fuga = [
+                (cx, cy)
+                for cy in range(linhas)
+                for cx in range(colunas)
+                if mapa[cy][cx] in [0, 3, 4]
+                and (cx, cy) not in perigo_total
+                and (cx, cy) not in posicoes_bombas
+                and (cx, cy) not in posicoes_jogadores
+            ]
+
+            rota_de_fuga = encontrar_caminho(
+                casas_de_fuga,
+                perigo_total,
+                permitir_perigo=True
+            )
+
+            if rota_de_fuga is not None:
+
+                print(
+                    f"[ATAQUE JOGADOR] Alvo: ({alvo_x}, {alvo_y}) | "
+                    f"Bomba em: ({x}, {y})"
+                )
+
+                return "bomba"
+
+            else:
+                print("[ATAQUE CANCELADO] Não encontrei abrigo.")
+
+        # Se não conseguimos atacar, continuar perseguindo
+        if distancia_alvo == 1:
+
+            print(
+                f"[ALVO PROXIMO] Estamos ao lado do adversário "
+                f"em ({alvo_x}, {alvo_y})"
+            )
+
+        else:
+
+            posicoes_ao_redor_alvo = set()
+
+            for dx, dy in ACOES_MOVIMENTO.values():
+
+                nx = alvo_x + dx
+                ny = alvo_y + dy
+
+                if not pode_andar(nx, ny):
+                    continue
+
+                if (nx, ny) in casas_perigosas:
+                    continue
+
+                posicoes_ao_redor_alvo.add((nx, ny))
+
+            caminho_alvo = encontrar_caminho(
+                posicoes_ao_redor_alvo,
+                casas_perigosas
+            )
+
+            if caminho_alvo is not None:
+
+                direcao_atual = caminho_alvo
+
+                print(
+                    f"[PERSEGUINDO] Alvo: ({alvo_x}, {alvo_y}) | "
+                    f"Movimento: {caminho_alvo}"
+                )
+
+                return caminho_alvo
+
+        # 4. Perseguir o adversário selecionado
+
+        
         
     # 4. Procurar posições ao lado de blocos destrutíveis (valor 1)
     posicoes_para_atacar = set()
