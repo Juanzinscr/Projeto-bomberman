@@ -9,6 +9,10 @@ ACOES_MOVIMENTO = {
     "direita": (1, 0)
 }
 
+TEMPO_MOVIMENTO = 0.1
+DURACAO_FOGO = 0.5
+MARGEM_SEGURANCA = 0.15
+
 direcao_atual = "baixo"
 
 estado_bomba = "livre"
@@ -81,18 +85,191 @@ def decidir_acao(
                     break
 
         return casas
+    # Calcula o tempo efetivo de explosão das bombas
 
-    # Identifica áreas perigosas de bombas existentes
-    casas_perigosas = set()
+    bombas_futuras = [
+        b for b in bombas
+        if not b.explodida
+    ]
+
+    # Guarda o tempo inicial de cada bomba
+    tempos_explosao = {
+        b: max(0, b.tempo_explosao)
+        for b in bombas_futuras
+    }
+
+    # Guarda o alcance de cada bomba
+    explosoes_previstas = {
+        b: calcular_explosao(b.x, b.y, b.nivel)
+        for b in bombas_futuras
+    }
+
+    # Propaga as possíveis reações em cadeia
+    houve_alteracao = True
+
+    while houve_alteracao:
+
+        houve_alteracao = False
+
+        for bomba_origem in bombas_futuras:
+
+            tempo_origem = tempos_explosao[bomba_origem]
+
+            for bomba_alvo in bombas_futuras:
+
+                if bomba_origem is bomba_alvo:
+                    continue
+
+                posicao_alvo = (
+                    bomba_alvo.x,
+                    bomba_alvo.y
+                )
+
+                # A explosão da bomba de origem alcança a outra?
+                if posicao_alvo in explosoes_previstas[bomba_origem]:
+
+                    # A bomba de origem explode antes da bomba-alvo?
+                    if tempo_origem < tempos_explosao[bomba_alvo]:
+
+                        tempos_explosao[bomba_alvo] = tempo_origem
+
+                        houve_alteracao = True
+
+    # Identifica os diferentes tipos de perigo
+    casas_em_chamas = set()
+    zonas_explosao_futura = set()
 
     for bomba in bombas:
+
+        # Bomba que já explodiu
         if bomba.explodida:
+
             if bomba.tempo_fogo > 0:
-                casas_perigosas.update(bomba.fogo)
+                casas_em_chamas.update(bomba.fogo)
+
+        # Bomba que ainda vai explodir
         else:
-            casas_perigosas.update(
+
+            zonas_explosao_futura.update(
                 calcular_explosao(bomba.x, bomba.y, bomba.nivel)
             )
+
+
+    # Junta os dois tipos para as análises gerais
+    casas_perigosas = casas_em_chamas | zonas_explosao_futura
+
+    def casa_segura_no_tempo(posicao, tempo_chegada):
+
+        # Tempo estimado durante o qual estaremos ocupando a casa
+        tempo_saida = (
+            tempo_chegada
+            + TEMPO_MOVIMENTO
+            + MARGEM_SEGURANCA
+        )
+
+        # Analisar todas as bombas existentes
+        for bomba in bombas:
+
+            # Caso 1: a bomba já explodiu
+            if bomba.explodida:
+
+                if posicao in bomba.fogo:
+
+                    inicio_perigo = 0
+                    fim_perigo = bomba.tempo_fogo
+
+                else:
+                    continue
+
+            # Caso 2: a bomba ainda não explodiu
+            else:
+
+                explosao = calcular_explosao(
+                    bomba.x,
+                    bomba.y,
+                    bomba.nivel
+                )
+
+                if posicao not in explosao:
+                    continue
+
+                inicio_perigo = tempos_explosao[bomba]
+
+                fim_perigo = (
+                    inicio_perigo
+                    + DURACAO_FOGO
+                )
+
+            # Verificar se nosso tempo de permanência
+            # coincide com o período de perigo
+            if (
+                tempo_chegada < fim_perigo
+                and tempo_saida > inicio_perigo
+            ):
+                return False
+
+        return True
+
+    def encontrar_caminho_temporal(destinos):
+
+        destinos = set(destinos)
+
+        if not destinos:
+            return None
+
+        # Cada elemento guarda:
+        # posição X, posição Y, quantidade de movimentos,
+        # primeira ação do caminho
+        fila = deque([(x, y, 0, None)])
+
+        visitadas = {(x, y)}
+
+        while fila:
+
+            atual_x, atual_y, passos, primeira_acao = fila.popleft()
+
+            # Chegamos ao destino
+            if (atual_x, atual_y) in destinos:
+                return primeira_acao
+
+            for acao, (dx, dy) in ACOES_MOVIMENTO.items():
+
+                nx = atual_x + dx
+                ny = atual_y + dy
+
+                if (nx, ny) in visitadas:
+                    continue
+
+                if not pode_andar(nx, ny):
+                    continue
+
+                # Calcular quanto tempo levaremos até essa casa
+                tempo_chegada = (
+                    (passos + 1) * TEMPO_MOVIMENTO
+                )
+
+                # Não entrar se houver perigo naquele instante
+                if not casa_segura_no_tempo(
+                    (nx, ny),
+                    tempo_chegada
+                ):
+                    continue
+
+                visitadas.add((nx, ny))
+
+                if primeira_acao is None:
+                    proxima_acao = acao
+                else:
+                    proxima_acao = primeira_acao
+
+                fila.append((
+                    nx,
+                    ny,
+                    passos + 1,
+                    proxima_acao
+                ))
+
+        return None
 
     # Encontra um caminho até uma das casas desejadas.
     # Retorna a primeira direção desse caminho.
@@ -121,6 +298,11 @@ def decidir_acao(
                 if not pode_andar(nx, ny):
                     continue
 
+                # Nunca entrar em uma casa onde já existe fogo
+                if (nx, ny) in casas_em_chamas:
+                    continue
+
+                # Bloquear explosões futuras, exceto quando a fuga exigir atravessá-las
                 if not permitir_perigo and (nx, ny) in perigos:
                     continue
 
@@ -161,11 +343,65 @@ def decidir_acao(
                 if not pode_andar(nx, ny):
                     continue
 
+                if (nx, ny) in casas_em_chamas:
+                    continue
+
                 visitadas.add((nx, ny))
                 fila.append((nx, ny))
 
         return False
-   
+
+        # Analisa quais casas o adversário consegue alcançar
+    def analisar_rotas_adversario(alvo):
+
+        inicio_x = alvo.grid_x
+        inicio_y = alvo.grid_y
+
+        fila = deque([(inicio_x, inicio_y)])
+        visitadas = {(inicio_x, inicio_y)}
+
+        while fila:
+
+            atual_x, atual_y = fila.popleft()
+
+            for dx, dy in ACOES_MOVIMENTO.values():
+
+                nx = atual_x + dx
+                ny = atual_y + dy
+
+                # Verifica se a posição está dentro do mapa
+                if not (0 <= nx < colunas and 0 <= ny < linhas):
+                    continue
+
+                # Paredes e blocos impedem a passagem
+                if mapa[ny][nx] not in [0, 3, 4]:
+                    continue
+
+                # Bombas ativas impedem a passagem
+                if (nx, ny) in posicoes_bombas:
+                    continue
+
+                # Outros jogadores também ocupam espaço
+                if any(
+                    p is not alvo
+                    and p.ativo
+                    and (p.grid_x, p.grid_y) == (nx, ny)
+                    for p in jogadores
+                ):
+                    continue
+
+                # Não precisamos analisar a mesma casa duas vezes
+                if (nx, ny) in visitadas:
+                    continue
+
+                # Não consideramos casas que já estão perigosas
+                if (nx, ny) in casas_perigosas:
+                    continue
+
+                visitadas.add((nx, ny))
+                fila.append((nx, ny))
+
+        return visitadas
    
     # PRIORIDADE 1: fugir de qualquer bomba, inclusive dos adversários
     if (x, y) in casas_perigosas:
@@ -180,10 +416,8 @@ def decidir_acao(
             and (cx, cy) not in posicoes_jogadores
         ]
 
-        rota_fuga = encontrar_caminho(
-            casas_seguras,
-            casas_perigosas,
-            permitir_perigo=True
+        rota_fuga = encontrar_caminho_temporal(
+            casas_seguras
         )
 
         if rota_fuga is not None:
@@ -206,9 +440,11 @@ def decidir_acao(
     # 2. Identificar e selecionar um adversário como alvo
     
     adversarios = [
-        p for p in jogadores
-        if p is not player and p.ativo
-    ]
+    p for p in jogadores
+    if p is not player
+    and p.ativo
+    and p.time != player.time
+]
 
     print(f"[DEBUG ALVO] alvo_atual: {alvo_atual}")
     print(f"[DEBUG ALVO] Está vazio? {alvo_atual is None}")
@@ -239,7 +475,17 @@ def decidir_acao(
             else:
                 alvo_atual = None
                 print("[ALVO] Nenhum adversário disponível")
-                
+
+        # Analisa as possibilidades de fuga do adversário
+    if alvo_atual is not None:
+
+        rotas_adversario = analisar_rotas_adversario(alvo_atual)
+
+        print(
+            f"[CERCO] Adversário em "
+            f"({alvo_atual.grid_x}, {alvo_atual.grid_y}) | "
+            f"Casas alcançáveis: {len(rotas_adversario)}"
+        )            
 
     # 3. Procurar power-ups: 3 = bomba, 4 = alcance
     powerups = [
@@ -250,7 +496,9 @@ def decidir_acao(
         and (cx, cy) not in casas_perigosas
     ]
 
-    caminho_powerup = encontrar_caminho(powerups, casas_perigosas)
+    caminho_powerup = encontrar_caminho_temporal(
+        powerups
+    )
 
     if caminho_powerup is not None:
         direcao_atual = caminho_powerup
@@ -356,9 +604,8 @@ def decidir_acao(
 
                 posicoes_ao_redor_alvo.add((nx, ny))
 
-            caminho_alvo = encontrar_caminho(
-                posicoes_ao_redor_alvo,
-                casas_perigosas
+            caminho_alvo = encontrar_caminho_temporal(
+                posicoes_ao_redor_alvo
             )
 
             if caminho_alvo is not None:
@@ -460,8 +707,8 @@ def decidir_acao(
             )
 
     # Se não estiver ao lado de um bloco, caminhar até uma posição de ataque
-    caminho_bloco = encontrar_caminho(
-        posicoes_para_atacar, casas_perigosas
+    caminho_bloco = encontrar_caminho_temporal(
+        posicoes_para_atacar
     )
 
     if caminho_bloco is not None:

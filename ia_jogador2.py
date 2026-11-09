@@ -82,17 +82,28 @@ def decidir_acao(
 
         return casas
 
-    # Identifica áreas perigosas de bombas existentes
-    casas_perigosas = set()
+    # Identifica os diferentes tipos de perigo
+    casas_em_chamas = set()
+    zonas_explosao_futura = set()
 
     for bomba in bombas:
+
+        # Bomba que já explodiu
         if bomba.explodida:
+
             if bomba.tempo_fogo > 0:
-                casas_perigosas.update(bomba.fogo)
+                casas_em_chamas.update(bomba.fogo)
+
+        # Bomba que ainda vai explodir
         else:
-            casas_perigosas.update(
+
+            zonas_explosao_futura.update(
                 calcular_explosao(bomba.x, bomba.y, bomba.nivel)
             )
+
+
+    # Junta os dois tipos para as análises gerais
+    casas_perigosas = casas_em_chamas | zonas_explosao_futura
 
     # Encontra um caminho até uma das casas desejadas.
     # Retorna a primeira direção desse caminho.
@@ -121,6 +132,11 @@ def decidir_acao(
                 if not pode_andar(nx, ny):
                     continue
 
+                # Nunca entrar em uma casa onde já existe fogo
+                if (nx, ny) in casas_em_chamas:
+                    continue
+
+                # Bloquear explosões futuras, exceto quando a fuga exigir atravessá-las
                 if not permitir_perigo and (nx, ny) in perigos:
                     continue
 
@@ -161,11 +177,65 @@ def decidir_acao(
                 if not pode_andar(nx, ny):
                     continue
 
+                if (nx, ny) in casas_em_chamas:
+                    continue
+
                 visitadas.add((nx, ny))
                 fila.append((nx, ny))
 
         return False
-   
+
+        # Analisa quais casas o adversário consegue alcançar
+    def analisar_rotas_adversario(alvo):
+
+        inicio_x = alvo.grid_x
+        inicio_y = alvo.grid_y
+
+        fila = deque([(inicio_x, inicio_y)])
+        visitadas = {(inicio_x, inicio_y)}
+
+        while fila:
+
+            atual_x, atual_y = fila.popleft()
+
+            for dx, dy in ACOES_MOVIMENTO.values():
+
+                nx = atual_x + dx
+                ny = atual_y + dy
+
+                # Verifica se a posição está dentro do mapa
+                if not (0 <= nx < colunas and 0 <= ny < linhas):
+                    continue
+
+                # Paredes e blocos impedem a passagem
+                if mapa[ny][nx] not in [0, 3, 4]:
+                    continue
+
+                # Bombas ativas impedem a passagem
+                if (nx, ny) in posicoes_bombas:
+                    continue
+
+                # Outros jogadores também ocupam espaço
+                if any(
+                    p is not alvo
+                    and p.ativo
+                    and (p.grid_x, p.grid_y) == (nx, ny)
+                    for p in jogadores
+                ):
+                    continue
+
+                # Não precisamos analisar a mesma casa duas vezes
+                if (nx, ny) in visitadas:
+                    continue
+
+                # Não consideramos casas que já estão perigosas
+                if (nx, ny) in casas_perigosas:
+                    continue
+
+                visitadas.add((nx, ny))
+                fila.append((nx, ny))
+
+        return visitadas
    
     # PRIORIDADE 1: fugir de qualquer bomba, inclusive dos adversários
     if (x, y) in casas_perigosas:
@@ -206,9 +276,11 @@ def decidir_acao(
     # 2. Identificar e selecionar um adversário como alvo
     
     adversarios = [
-        p for p in jogadores
-        if p is not player and p.ativo
-    ]
+    p for p in jogadores
+    if p is not player
+    and p.ativo
+    and p.time != player.time
+]
 
     print(f"[DEBUG ALVO] alvo_atual: {alvo_atual}")
     print(f"[DEBUG ALVO] Está vazio? {alvo_atual is None}")
@@ -239,7 +311,17 @@ def decidir_acao(
             else:
                 alvo_atual = None
                 print("[ALVO] Nenhum adversário disponível")
-                
+
+        # Analisa as possibilidades de fuga do adversário
+    if alvo_atual is not None:
+
+        rotas_adversario = analisar_rotas_adversario(alvo_atual)
+
+        print(
+            f"[CERCO] Adversário em "
+            f"({alvo_atual.grid_x}, {alvo_atual.grid_y}) | "
+            f"Casas alcançáveis: {len(rotas_adversario)}"
+        )            
 
     # 3. Procurar power-ups: 3 = bomba, 4 = alcance
     powerups = [
