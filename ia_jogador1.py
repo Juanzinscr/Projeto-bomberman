@@ -716,3 +716,51 @@ def decidir_acao(
         return caminho_bloco
 
     return "parado"
+
+def extrair_features(x, y, mapa, bombas, jogadores, player, casas_perigosas, linhas, colunas):
+    features = []
+    
+    # 1. Perigo na casa atual (0 ou 1)
+    perigo_atual = 1 if (x, y) in casas_perigosas else 0
+    features.append(perigo_atual)
+    
+    # 2. Caminho livre nas 4 direções (cima, baixo, esquerda, direita)
+    # Podemos testar se cada vizinho é válido para andar
+    movimentos_teste = [(0, -1), (0, 1), (-1, 0), (1, 0)] # cima, baixo, esquerda, direita
+    for dx, dy in movimentos_teste:
+        nx, ny = x + dx, y + dy
+        # Verifica se está dentro do mapa e se pode andar (sem paredes, bombas ou jogadores)
+        # (Você pode reutilizar a lógica da sua função pode_andar aqui)
+        livre = 1 if (0 <= nx < colunas and 0 <= ny < linhas and mapa[ny][nx] in [0, 3, 4]) else 0
+        features.append(livre)
+
+    # 3. Presença de bloco destrutível (valor 1) nas 4 direções adjacentes
+    for dx, dy in movimentos_teste:
+        nx, ny = x + dx, y + dy
+        tem_bloco = 1 if (0 <= nx < colunas and 0 <= ny < linhas and mapa[ny][nx] == 1) else 0
+        features.append(tem_bloco)
+
+    # 4. Posição relativa ao power-up mais próximo (dx, dy)
+    powerups = [(cx, cy) for cy in range(linhas) for cx in range(colunas) if mapa[cy][cx] in [3, 4]]
+    if powerups:
+        # Acha o power-up mais próximo usando a distância de Manhattan
+        p_mais_proximo = min(powerups, key=lambda p: abs(p[0] - x) + abs(p[1] - y))
+        dist_x_pw = p_mais_proximo[0] - x
+        dist_y_pw = p_mais_proximo[1] - y
+    else:
+        dist_x_pw, dist_y_pw = 0, 0
+    
+    features.extend([dist_x_pw, dist_y_pw])
+
+    # 5. Posição relativa ao inimigo mais próximo (dx, dy)
+    adversarios = [p for p in jogadores if p is not player and p.ativo and p.time != player.time]
+    if adversarios:
+        adv_mais_proximo = min(adversarios, key=lambda p: abs(p.grid_x - x) + abs(p.grid_y - y))
+        dist_x_adv = adv_mais_proximo.grid_x - x
+        dist_y_adv = adv_mais_proximo.grid_y - y
+    else:
+        dist_x_adv, dist_y_adv = 0, 0
+        
+    features.extend([dist_x_adv, dist_y_adv])
+
+    return features
